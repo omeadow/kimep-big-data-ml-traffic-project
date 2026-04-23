@@ -1,213 +1,79 @@
-# Traffic Forecasting Project
+# Traffic Forecasting (1-Hour Ahead)
 
-## Environment and Dependency Management (`uv`)
+Forecast next-hour traffic volume (`Vehicles`) for each junction using leakage-safe time-series features and XGBoost.
 
-This project uses [`uv`](https://docs.astral.sh/uv/) for Python dependency management.
+## What this project does
 
-### Setup
+- Predicts `Vehicles(t+1)` from historical hourly records.
+- Uses per-junction chronological train/test split (80/20).
+- Compares against a naive baseline (`next = current`).
 
-1. Install `uv` (if not already installed).
-2. Sync dependencies from `pyproject.toml` and `uv.lock`:
+## Data
+
+- Source: `data/traffic.csv`
+- Columns: `DateTime`, `Junction`, `Vehicles` (and optional `ID`)
+- Scale: ~48k rows across 4 junctions
+
+## Modeling approach
+
+- Time features: hour, day of week, weekend flag, month
+- Lag features: 1, 2, 3, 6, 12, 24, 48, 168
+- Rolling features (shifted to avoid leakage): mean(3/6/24), std(24)
+- Model: `XGBRegressor`
+
+## Results
+
+### Overall
+
+| Model | MAE | RMSE |
+|---|---:|---:|
+| Naive baseline (next = current) | 4.154 | 6.168 |
+| XGBRegressor | 3.124 | 4.988 |
+
+### Per junction
+
+| Junction | Baseline MAE | Baseline RMSE | Model MAE | Model RMSE | n_test |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 6.260 | 8.098 | 4.500 | 6.488 | 2885 |
+| 2 | 2.939 | 3.736 | 2.362 | 2.996 | 2885 |
+| 3 | 3.715 | 6.480 | 2.837 | 5.322 | 2885 |
+| 4 | 2.598 | 3.548 | 1.994 | 2.911 | 835 |
+
+Artifacts are written to:
+
+- `outputs/metrics_overall.csv`
+- `outputs/metrics_per_junction.csv`
+- `outputs/test_predictions.csv`
+
+## Prediction plots (test split)
+
+### Junction 1
+
+![Junction 1 Actual vs Predicted](outputs/figures/junction_1_actual_vs_pred.png)
+
+### Junction 2
+
+![Junction 2 Actual vs Predicted](outputs/figures/junction_2_actual_vs_pred.png)
+
+### Junction 3
+
+![Junction 3 Actual vs Predicted](outputs/figures/junction_3_actual_vs_pred.png)
+
+### Junction 4
+
+![Junction 4 Actual vs Predicted](outputs/figures/junction_4_actual_vs_pred.png)
+
+## Reproduce
 
 ```bash
+# install deps
 uv sync
+
+# execute all notebook cells
+UV_CACHE_DIR=.uv-cache uv run jupyter nbconvert \
+  --to notebook --execute notebooks/Untitled.ipynb \
+  --output Untitled.executed.ipynb --output-dir notebooks
+
+# extract matplotlib plots from executed notebook outputs
+UV_CACHE_DIR=.uv-cache uv run python src/extract_notebook_plots.py
 ```
-
-### Run the project
-
-Run the main script:
-
-```bash
-uv run python main.py
-```
-
-Start Jupyter for notebook work:
-
-```bash
-uv run jupyter notebook
-```
-
-## Project Goal
-
-This project predicts the **number of vehicles one hour ahead** for a traffic junction.
-
-The dataset contains hourly traffic observations for 4 junctions and about 48,000 rows.
-
-This is a **time series regression** project, not a classification project.
-
-Target:
-
-- predict `Vehicles` at time `t+1 hour`
-
-Example:
-
-- if a row is for `10:00`, the model should predict traffic for `11:00`
-
----
-
-## Dataset Schema
-
-Expected columns:
-
-- `DateTime` — timestamp of the observation
-- `Junction` — junction identifier
-- `Vehicles` — number of vehicles observed at that hour
-- `ID` — row identifier if present
-
-Important:
-- data must be sorted by `Junction` and `DateTime`
-- all forecasting logic must respect time order
-- no future leakage is allowed
-
----
-
-## Problem Framing
-
-For each junction, use historical traffic and time-based patterns to estimate the vehicle count one hour later.
-
-This is essentially:
-
-- input: current and past traffic information
-- output: next hour vehicle count
-
-The project should focus on **practical tabular/time-series ML**, not deep learning.
-
-Do **not** use:
-- LSTM
-- RNN
-- Transformers
-unless explicitly requested later
-
-Preferred first approach:
-- lag-based feature engineering
-- tree-based regression model such as XGBoost
-- simple baselines first
-
----
-
-## Modeling Strategy
-
-Start simple and build in stages.
-
-### Stage 1 — Data audit
-Verify:
-- datetime parsing is correct
-- no broken timestamps
-- duplicates
-- missing values
-- hourly continuity per junction
-
-### Stage 2 — Baseline
-Build a naive baseline:
-
-- predict next hour vehicles = current hour vehicles
-
-This baseline is important. Any ML model should beat it.
-
-### Stage 3 — Feature engineering
-Create features using **past data only**.
-
-Required feature types:
-
-#### Time features
-- hour
-- day of week
-- is weekend
-- month if useful
-
-#### Lag features
-Per junction:
-- `lag_1`
-- `lag_2`
-- `lag_3`
-- `lag_6`
-- `lag_12`
-- `lag_24`
-- `lag_48`
-- `lag_168` if enough history exists
-
-#### Rolling features
-Per junction, using only past values:
-- rolling mean over 3 hours
-- rolling mean over 6 hours
-- rolling mean over 24 hours
-- rolling std over 24 hours
-
-### Stage 4 — Model
-Preferred first model:
-- `XGBoost Regressor`
-
-Fallback if XGBoost is unavailable:
-- `RandomForestRegressor`
-- `GradientBoostingRegressor`
-- `LinearRegression` as a simple benchmark
-
-### Stage 5 — Evaluation
-Use chronological split only.
-
-Do **not** use random train/test split.
-
-Preferred evaluation metrics:
-- MAE
-- RMSE
-
-Report:
-- overall performance
-- per-junction performance
-
----
-
-## Target Construction
-
-The target should be created per junction:
-
-- `target = Vehicles shifted by -1 within each Junction group`
-
-Meaning:
-- current row contains information available at time `t`
-- target is `Vehicles` at time `t+1`
-
-Any rows with missing target after shifting should be dropped.
-
----
-
-## Data Leakage Rules
-
-This project must avoid leakage.
-
-Rules:
-- never use future rows to build current-row features
-- all lag features must come from past values only
-- rolling features must be shifted so they do not include the current target hour
-- validation/test data must come after training data in time
-
-If a feature might contain future information, do not use it.
-
----
-
-## Project Priorities
-
-Priority order:
-
-1. correctness
-2. no leakage
-3. clear code
-4. solid baseline
-5. practical model
-6. readable outputs
-
-Do not overengineer.
-
-Keep the first version small and working.
-
----
-
-## Suggested Repository Structure
-
-```text
-data/
-notebooks/
-src/
-models/
-outputs/
-README.md
